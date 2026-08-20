@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "updated_at": "2026-08-20T15:37:51",
+  "lite": {
+    "version": "1.0.0",
+    "file": "TG82_VoLTE_TOOL_lite_Setup.exe",
+    "sha256": "0bc667fa5cb4519168604e94d8c702c5001a4d2c954ad42e5a816ebdc24b5d1e",
+    "size": 65680935,
+    "kind": "setup",
+    "url": "https://github.com/mobjle2/TG82-VoLTE-Release/releases/download/fix-volte-v1.0/TG82_VoLTE_TOOL_lite_Setup.exe",
+    "edition": "lite"
+  }
+}
