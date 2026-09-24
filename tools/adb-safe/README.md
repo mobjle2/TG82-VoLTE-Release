@@ -1,89 +1,83 @@
 # ADB Safe Session / Phiên ADB An Toàn
 
-Small **Windows** helper for phone-repair / VoLTE support desks when connecting customer phones over USB/ADB has caused a blue screen (BSOD).
+Small **Windows** helper for phone-repair / VoLTE desks. Covers **local USB** and the high-risk path **USB Redirector TG82 Auto + ADB**.
 
-**Honest scope:** this tool **reduces risk** (clean ADB lifecycle + recovery helpers + hardening tips). It does **not** cure all BSODs. Faulty cables, bad USB ports, corrupt or third-party drivers, and hardware faults can still crash Windows.
+**Operator evidence:** BSOD + reboot happened **immediately** when connecting ADB through **USB Redirector TG82 Auto**. This tool keeps TG82 in the workflow — it does **not** tell you to abandon remote USB.
 
----
-
-## When to use / Khi nào dùng
-
-| Situation | Action |
-|-----------|--------|
-| Before plugging a customer phone for ADB/VoLTE work | **Prepare** → plug → **Connect** |
-| After a bad connect, stuck ADB, or BSOD + reboot | Unplug phone → **Recover** → then Prepare/Connect only if needed |
-| Finished with the phone | **Disconnect** → unplug cable |
-| Need a quick reminder of safe habits | **Tips** |
+**Honest scope:** reduces risk via ordered lifecycle. Does **not** cure all BSODs (hardware, cables, ports, filter drivers can still crash Windows).
 
 ---
 
-## How to run / Cách chạy
+## Safe order (TG82 Auto) — memorize this
 
-### Option A — double-click (recommended)
+```
+kill ADB  →  TG82 Share  →  Connect (ADB)  →  work
+         →  Disconnect / kill ADB  →  TG82 Unshare
+```
 
-1. Copy or clone this folder onto the Windows PC: `tools/adb-safe/`
-2. Ensure `adb.exe` is on PATH (Android platform-tools) **or** place `adb.exe` next to these scripts.
+| Step | Menu | What you do |
+|------|------|-------------|
+| 1 | **8 Prepare TG82** | Kill stuck `adb` + `kill-server` |
+| 2 | TG82 Auto UI | **Share** / Attach **one** customer phone only |
+| 3 | Wait 3–5s | Device stable; do not start VoLTE yet |
+| 4 | **2 Connect** | `start-server`, lock one serial, then work |
+| 5 | Finish work | Close VoLTE / stop adb commands |
+| 6 | **9 Disconnect TG82** | Kill ADB again |
+| 7 | TG82 Auto UI | **Unshare** / Release — then unplug customer-side if needed |
+
+After BSOD: **5 Recover** → Unshare any stuck session → only Share again after step 1.
+
+---
+
+## How to run (NOW)
+
+1. Copy `tools/adb-safe/` to the Windows PC (or pull this PR branch).
+2. Need `adb.exe` on PATH (or next to the scripts).
 3. Double-click **`AdbSafe.bat`**
 
-The `.bat` launches PowerShell with `-ExecutionPolicy Bypass` **for this script only** (does not permanently change machine policy).
-
-### Option B — PowerShell
-
 ```powershell
-cd path\to\tools\adb-safe
+cd tools\adb-safe
 powershell -NoProfile -ExecutionPolicy Bypass -File .\AdbSafe.ps1
 ```
 
-If your org blocks scripts entirely, ask IT to allow this folder, or run the same commands manually from an elevated PowerShell using the flow in the menu.
-
-### Optional one-shot actions
+One-shot for reconnect:
 
 ```powershell
-.\AdbSafe.ps1 -Action Prepare -NoPause
-.\AdbSafe.ps1 -Action Connect -Serial <device-serial> -NoPause
-.\AdbSafe.ps1 -Action Disconnect -NoPause
-.\AdbSafe.ps1 -Action Recover -NoPause
-.\AdbSafe.ps1 -Action Status -NoPause
-.\AdbSafe.ps1 -Action Tips -NoPause
-.\AdbSafe.ps1 -Action Kill -NoPause
+.\AdbSafe.ps1 -Action PrepareTg82 -NoPause
+# → Share in TG82 Auto (one phone), wait 3–5s
+.\AdbSafe.ps1 -Action Connect -NoPause
+# → work…
+.\AdbSafe.ps1 -Action DisconnectTg82 -NoPause
+# → Unshare in TG82 Auto
 ```
 
-### ExecutionPolicy note
-
-You do **not** need to run `Set-ExecutionPolicy RemoteSigned` for the machine if you use `AdbSafe.bat` or `-ExecutionPolicy Bypass -File ...` as above. That bypass is scoped to the launch.
+`.bat` / `-ExecutionPolicy Bypass` is **launch-scoped only** (does not change machine policy).
 
 ---
 
-## What it does / Việc tool làm
+## What it does
 
-1. **Prepare** — kill stuck `adb` processes, `adb kill-server`, show hardening tips; asks you **not** to plug yet.
-2. **Connect** — restart ADB cleanly, wait for devices, **lock to one serial** (`ANDROID_SERIAL`), refuse multi-device ambiguity without a choice.
-3. **Status** — show `adb` path, device list, process count.
-4. **Disconnect** — disconnect selected device, `kill-server`, clear stuck processes, clear `ANDROID_SERIAL`.
-5. **Recover** — after BSOD/bad USB: clear adb, restart server; if elevated Admin, attempt safe enable/disable of a few USB hubs; otherwise print Device Manager steps.
-6. **Tips / Kill** — hardening notes or force-kill adb only.
+- **Prepare / Prepare TG82** — stop ADB before plug or before Share  
+- **Connect** — clean start-server, **one** device (`ANDROID_SERIAL`)  
+- **Disconnect / Disconnect TG82** — kill ADB before unplug / before Unshare  
+- **Recover** — clear adb after BSOD; optional Admin USB hub refresh; TG82 Unshare checklist  
+- **Checklist / Tips** — print the safe order + modest public notes on USB-redirect + BSOD class of bugs  
+- Best-effort detection of TG82 / USB Redirector process or `tusbd`/`dpnptls` services  
 
-CLI messages are short **Vietnamese + English** so a support tech can move quickly.
+## What it does **not** do
 
----
-
-## What it does **not** do / Việc tool **không** làm
-
-- Does **not** guarantee no BSOD.
-- Does **not** install, download, or patch USB/ADB drivers.
-- Does **not** flash phones, change VoLTE configs, or replace your VoLTE tooling.
-- Does **not** require or install any “driver booster” / third-party USB packs (those often increase risk).
-- USB hub reset needs **Administrator**; without Admin it only prints manual recovery steps.
+- Guarantee no BSOD  
+- Install/update TG82 or USB drivers  
+- Automate the TG82 Share/Unshare UI (you click that)  
+- Replace VoLTE tooling  
 
 ---
 
-## Safety notes / An toàn
+## Public context (modest)
 
-- Prefer **one labeled known-good USB port** (often a rear USB 2.0 port) and a short data cable.
-- Use **Google USB Driver** or the phone OEM driver only — avoid random driver update utilities.
-- Optional Windows setting: *System Properties → Hardware → Device Installation Settings → No* to limit automatic driver installs.
-- If BSOD repeats on the **same** port after recovery, treat it as hardware/driver isolation: swap port, cable, or PC before blaming ADB alone.
-- Always **Disconnect** before unplugging when possible.
+- USB Redirector–class products use **kernel** USB/virtual-bus drivers; vendor changelogs for IncentivesPro USB Redirector repeatedly list **BSOD fixes** around stub/unplug/connected state ([news](https://www.incentivespro.com/news.html)). That is **general** redirect risk, not a proven dump for this operator’s PC.  
+- USB-over-IP + Android ADB has public BSOD reports (e.g. [usbipd-win #461](https://github.com/dorssel/usbipd-win/issues/461)). Same **risk class**, different product.  
+- We do **not** have this operator’s minidump; if BSOD repeats, capture STOP code / `MODULE_NAME` via WinDbg `!analyze -v`.
 
 ---
 
@@ -91,7 +85,7 @@ CLI messages are short **Vietnamese + English** so a support tech can move quick
 
 ```
 tools/adb-safe/
-  AdbSafe.ps1   # main tool
-  AdbSafe.bat   # Windows launcher
-  README.md     # this file
+  AdbSafe.ps1
+  AdbSafe.bat
+  README.md
 ```

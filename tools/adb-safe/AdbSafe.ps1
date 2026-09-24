@@ -1,20 +1,27 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  ADB Safe Session — reduce BSOD risk when connecting customer phones over USB/ADB.
+  ADB Safe Session — reduce BSOD risk with local USB or TG82 Auto / USB Redirector + ADB.
 
 .DESCRIPTION
-  Small Windows helper for phone-repair / VoLTE support desks.
-  Stops ADB before connect, isolates one device, clean disconnect, recovery helpers.
-  Does NOT guarantee no BSOD — faulty cables, ports, or drivers can still crash Windows.
+  Windows helper for phone-repair / VoLTE desks.
+  Operator evidence: BSOD can happen immediately when attaching a phone via
+  "USB Redirector TG82 Auto" then using ADB — treat redirect as a first-class path.
+
+  Workflow-friendly: stop ADB before attach, one device only, kill ADB before
+  releasing redirect, recovery after crash. Does NOT guarantee no BSOD.
 
 .NOTES
-  Prefer: one known-good USB port, stock Google USB / OEM driver only, no random driver packs.
+  Redirect stacks use kernel USB filter/virtual-bus drivers; attach+ADB races
+  are a known risk class for USB-over-IP tools in general. Prefer ordered steps.
 #>
 
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu', 'Prepare', 'Connect', 'Status', 'Disconnect', 'Recover', 'Tips', 'Kill')]
+    [ValidateSet(
+        'Menu', 'Prepare', 'PrepareTg82', 'Connect', 'Status',
+        'Disconnect', 'DisconnectTg82', 'Recover', 'Tips', 'Kill', 'Checklist'
+    )]
     [string]$Action = 'Menu',
 
     [string]$Serial,
@@ -24,6 +31,19 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $Script:PreferredSerial = $Serial
+$Script:SessionMode = $null  # 'Local' | 'Tg82'
+
+# Process / window name hints for TG82 Auto / USB Redirector (best-effort).
+$Script:RedirectProcessHints = @(
+    'TG82',
+    'TG82 Auto',
+    'TG82Auto',
+    'USB Redirector',
+    'USBRedirector',
+    'usbredirector',
+    'tusbd',
+    'IncentivesPro'
+)
 
 # --- Bilingual helpers -------------------------------------------------------
 
@@ -50,6 +70,7 @@ function Write-Banner {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "  ADB Safe Session / Phien ADB An Toan" -ForegroundColor Cyan
+    Write-Host "  Local USB  +  TG82 Auto / USB Redirector" -ForegroundColor Cyan
     Write-Host "  Risk reducer — NOT a BSOD cure" -ForegroundColor DarkYellow
     Write-Host "  Giam rui ro — KHONG chua het BSOD" -ForegroundColor DarkYellow
     Write-Host "========================================" -ForegroundColor Cyan
@@ -165,8 +186,8 @@ function Select-OneDevice {
     if ($devices.Count -eq 1) { return $devices[0].Serial }
 
     Write-Bi -Level Warn `
-        -Vi "Nhieu may dang ket noi. Chi chon MOT thiet bi." `
-        -En "Multiple devices connected. Pick ONE device only."
+        -Vi "Nhieu may dang ket noi. Chi chon MOT thiet bi (redirect + ADB de crash hon)." `
+        -En "Multiple devices connected. Pick ONE only (redirect + ADB raises crash risk)."
     for ($i = 0; $i -lt $devices.Count; $i++) {
         Write-Host ("  [{0}] {1}  {2}" -f ($i + 1), $devices[$i].Serial, $devices[$i].Extra)
     }
@@ -177,7 +198,71 @@ function Select-OneDevice {
     return $devices[$idx - 1].Serial
 }
 
-# --- Core actions ------------------------------------------------------------
+# --- Redirect / TG82 detection -----------------------------------------------
+
+function Get-RedirectHints {
+    $found = @()
+    try {
+        $procs = Get-Process -ErrorAction SilentlyContinue
+        foreach ($proc in $procs) {
+            $name = $proc.ProcessName
+            $title = ''
+            try { $title = $proc.MainWindowTitle } catch {}
+            foreach ($hint in $Script:RedirectProcessHints) {
+                if ($name -like "*$hint*" -or ($title -and $title -like "*$hint*")) {
+                    $found += [pscustomobject]@{
+                        Pid     = $proc.Id
+                        Name    = $name
+                        Title   = $title
+                        Matched = $hint
+                    }
+                    break
+                }
+            }
+        }
+    }
+    catch {}
+
+    # Kernel driver / service names commonly shipped with USB Redirector products
+    # (IncentivesPro uses tusbd.sys / dpnptls — presence alone is not a bug).
+    $driverHints = @('tusbd', 'dpnptls', 'usbredirector')
+    foreach ($svcName in $driverHints) {
+        $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+        if ($svc) {
+            $found += [pscustomobject]@{
+                Pid     = $null
+                Name    = ("service:" + $svc.Name)
+                Title   = $svc.Status
+                Matched = $svcName
+            }
+        }
+    }
+    return $found
+}
+
+function Show-RedirectStatus {
+    $hits = @(Get-RedirectHints)
+    if ($hits.Count -eq 0) {
+        Write-Bi -Level Info `
+            -Vi "Chua thay process/service TG82 Auto / USB Redirector (co the ten khac)." `
+            -En "No TG82 Auto / USB Redirector process/service detected (name may differ)."
+        return $false
+    }
+    Write-Bi -Level Warn `
+        -Vi "Phat hien goi y redirect/TG82 (kernel USB stack dang/co the chay):" `
+        -En "Redirect/TG82 hints detected (USB redirect stack may be active):"
+    foreach ($h in $hits) {
+        if ($h.Pid) {
+            Write-Host ("  PID {0}  {1}  [{2}]  {3}" -f $h.Pid, $h.Name, $h.Matched, $h.Title)
+        }
+        else {
+            Write-Host ("  {0}  status={1}  [{2}]" -f $h.Name, $h.Title, $h.Matched)
+        }
+    }
+    return $true
+}
+
+# --- Core ADB helpers --------------------------------------------------------
 
 function Stop-AdbServer {
     Write-Bi -Level Info `
@@ -224,26 +309,23 @@ function Clear-StuckAdbProcesses {
 
 function Show-UsbHints {
     Write-Bi -Level Title `
-        -Vi "Goi y khoi phuc USB (an toan, khong can malware/driver pack):" `
-        -En "USB recovery hints (safe; no driver packs / malware):"
+        -Vi "Goi y khoi phuc USB (an toan):" `
+        -En "USB recovery hints (safe):"
     Write-Host @"
-  1) Rut day USB, doi sang 1 cong USB da biet on dinh (uu tien USB 2.0 sau).
-     Unplug cable; use ONE known-good port (prefer a rear USB 2.0 port).
-  2) Mo Device Manager (devmgmt.msc) -> Universal Serial Bus controllers
-     -> chuot phai tung "USB Root Hub" / "USB Composite Device" lien quan -> Disable, roi Enable.
-     Or: right-click problematic hub/composite device -> Disable, then Enable.
-  3) Neu thiet bi hien "! " / Unknown: Go to phone Settings -> Developer options
-     -> revoke USB debugging authorizations, roi cam lai va bam Allow.
-  4) Tranh: Driver Genius / Driver Booster / Random USB driver packs.
-     Avoid random driver update tools.
-  5) Neu BSOD lap lai tren CUNG cong USB: doi cong / doi day / thu may khac
-     de phan biet loi phan cung vs driver.
-     If BSOD repeats on the SAME port: swap port/cable/PC to separate HW vs driver.
+  1) Neu dung TG82 Auto: kill ADB (menu 9) TRUOC, roi Unshare trong app,
+     roi moi rut day o may khach.
+     If using TG82 Auto: kill ADB (menu 9) FIRST, then Unshare in the app,
+     then unplug the customer-side cable.
+  2) Rut day / Unshare, doi 5-10s, dung 1 thiet bi duy nhat.
+     Unplug / Unshare, wait 5-10s, keep a single device only.
+  3) Device Manager -> USB controllers: Disable/Enable USB Root Hub lien quan.
+  4) Tranh Driver Genius / Driver Booster / random USB packs.
+  5) Neu BSOD lap lai ngay khi Share tren TG82: doi cong/cap o may khach,
+     thu Share khi ADB da kill (menu 8), ghi lai STOP code.
 "@
 }
 
 function Invoke-UsbPnPRefresh {
-    # Optional, documented-safe: restart PnP for USB hubs via pnputil / Disable-PnpDevice when admin.
     $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
     if (-not $isAdmin) {
@@ -281,8 +363,8 @@ function Invoke-UsbPnPRefresh {
             }
         }
         Write-Bi -Level Ok `
-            -Vi "Da thu reset $count hub(s). Cam lai may." `
-            -En "Attempted reset on $count hub(s). Reconnect the phone."
+            -Vi "Da thu reset $count hub(s)." `
+            -En "Attempted reset on $count hub(s)."
     }
     catch {
         Write-Bi -Level Warn `
@@ -292,75 +374,187 @@ function Invoke-UsbPnPRefresh {
     }
 }
 
+function Show-Tg82OrderedSteps {
+    Write-Bi -Level Title `
+        -Vi "THU TU BAT BUOC (TG82 Auto Share + ADB):" `
+        -En "REQUIRED ORDER (TG82 Auto Share + ADB):"
+    Write-Host @"
+
+  kill ADB  ->  TG82 Share  ->  Connect(ADB)  ->  work
+       ->  Disconnect/kill ADB  ->  TG82 Unshare
+
+  === KET NOI / CONNECT ===
+  A1. Menu 8 Prepare TG82  =  kill ADB (+ kill-server). BAT BUOC truoc Share.
+  A2. TG82 Auto: Share / Attach DUNG MOT may khach. (chua chay adb)
+  A3. Doi 3-5s cho device on dinh.
+  A4. Menu 2 Connect       =  start ADB, chot 1 serial, roi lam viec VoLTE.
+
+  === NGAT / DISCONNECT ===
+  B1. Dong tool VoLTE / lenh adb dang chay.
+  B2. Menu 9 Disconnect TG82  =  kill ADB TRUOC.
+  B3. TG82 Auto: Unshare / Release / Stop session.
+  B4. Doi 2-3s; rut day o may khach chi SAU Unshare.
+
+  === SAU BSOD (crash ngay khi connect qua TG82 Auto) ===
+  C1. Boot xong — CHUA Share lai.
+  C2. Menu 5 Recover.
+  C3. TG82: Unshare moi session treo / Exit app neu can.
+  C4. Chi Share lai sau menu 8 (ADB da tat).
+
+  Van DUNG duoc TG82 (can remote USB) — chi can dung DUNG THU TU.
+"@
+}
+
 function Show-HardeningTips {
     Write-Bi -Level Title `
-        -Vi "Cung hoa / Hardening (giam rui ro BSOD khi ADB):" `
-        -En "Hardening tips (reduce BSOD risk with ADB):"
+        -Vi "Cung hoa / Hardening (Local USB + TG82 Redirect):" `
+        -En "Hardening tips (Local USB + TG82 Redirect):"
     Write-Host @"
-  * Mot cong USB on dinh — danh dau bang bang keo; dung lai moi lan.
-    One known-good USB port — label it; reuse every time.
-  * Day data ngan, chat luong tot; tranh hub USB re / dai.
-    Short quality data cable; avoid cheap hubs / long extensions.
-  * Chi cai Google USB Driver / OEM (Samsung, Xiaomi...) — khong cai driver spam.
-    Install only Google USB Driver or OEM drivers — no driver spam tools.
-  * Windows: Settings -> Windows Update -> Advanced -> optional updates
-    -> tranh tu dong cai driver thu nghiem. Co the tat "automatic driver download":
-    System Properties -> Hardware -> Device Installation Settings -> No.
-    Optional: block automatic unsigned/experimental driver installs there.
-  * Rut may khi khong dung; luon Disconnect sach (menu 4) truoc khi rut.
-    Unplug when idle; always clean-disconnect (menu 4) before unplug.
-  * Sau BSOD: Recover (menu 5) truoc khi cam lai may khach.
-    After BSOD: run Recover (menu 5) before reconnecting a customer phone.
-  * Tool nay GIAM RUI RO — khong bao hanh het BSOD (phan cung/driver van co the loi).
-    This tool REDUCES RISK — it does not guarantee no BSOD (HW/driver can still fail).
+  * Xu huong rui ro cao: USB Redirector TG82 Auto + phien ADB (bang chung
+    operator: BSOD + reboot NGAY khi connect qua TG82 Auto).
+    High-risk path: TG82 Auto USB Redirector + ADB session (operator: BSOD
+    immediately on connect via TG82 Auto).
+  * Luon kill ADB truoc Share va truoc Unshare (menu 8 / 9).
+    Always stop ADB before Share and before Unshare (menus 8 / 9).
+  * Mot thiet bi duy nhat — khong tron may local + redirect.
+    One device only — never mix local USB phone + redirected phone.
+  * Tranh adb push/file lon ngay sau Share; doi on dinh roi moi transfer.
+    Avoid large adb push right after Share; wait until stable.
+  * Mot cong USB on dinh o may KHACH; day data ngan.
+    One known-good port on the CUSTOMER PC; short data cable.
+  * Chi Google USB / OEM driver — khong Driver Booster.
+  * Sau BSOD: ghi STOP code (vd. tu Automatic Repair / Event Viewer) de
+    doi chieu driver (redirect filter vs hub). Tool khong doc dump giup ban.
+  * Tool GIAM RUI RO — khong bao hanh het BSOD.
 "@
+    Show-Tg82OrderedSteps
+}
+
+function Show-PublicNotes {
+    Write-Bi -Level Title `
+        -Vi "Ghi chu cong khai (tham khao — khong ket luan TG82 rieng):" `
+        -En "Public notes (context — not a verdict on TG82 itself):"
+    Write-Host @"
+  * San pham USB Redirector (IncentivesPro) ship kernel drivers (vd. tusbd.sys)
+    va release notes cua ho da ghi nhieu lan "fixed BSOD" lien quan stub /
+    virtual USB bus / unplug khi con connected — cho thay lop driver nay
+    NHAY CAM voi Attach/Release. Nguon: https://www.incentivespro.com/news.html
+  * Lop USB-over-IP + ADB (vd. usbipd-win + adb push) co bao cao BSOD cong khai
+    khi gan thiet bi Android / transfer lon:
+    https://github.com/dorssel/usbipd-win/issues/461
+  * Ket luan thuc dung: thu tu kill-ADB -> Attach -> ADB, va kill-ADB -> Release
+    la mitigation hop ly; khong thay the viec cap nhat TG82/redirect neu vendor co ban.
+  * Chung toi KHONG co dump chung minh driver nao gay BSOD tren may operator.
+    Neu co Memory.dmp: WinDbg !analyze -v de xem MODULE_NAME.
+"@
+}
+
+# --- Actions -----------------------------------------------------------------
+
+function Action-Checklist {
+    Show-Tg82OrderedSteps
+    Show-PublicNotes
+    $null = Show-RedirectStatus
 }
 
 function Action-Prepare {
     Write-Bi -Level Title `
-        -Vi "CHUAN BI phien an toan — CHUA cam may." `
-        -En "PREPARE safe session — do NOT plug phone yet."
+        -Vi "CHUAN BI phien LOCAL USB — CHUA cam may." `
+        -En "PREPARE local USB session — do NOT plug phone yet."
+    $Script:SessionMode = 'Local'
     Clear-StuckAdbProcesses
     Stop-AdbServer
     Show-HardeningTips
     Write-Bi -Level Ok `
-        -Vi "San sang. Cam may vao CONG USB da chon, bat USB debugging, roi chon Connect (2)." `
-        -En "Ready. Plug into the chosen USB port, enable USB debugging, then Connect (2)."
+        -Vi "San sang LOCAL. Cam may vao cong USB da chon, roi Connect (2)." `
+        -En "LOCAL ready. Plug into chosen USB port, then Connect (2)."
+}
+
+function Action-PrepareTg82 {
+    Write-Bi -Level Title `
+        -Vi "CHUAN BI TG82 — kill ADB xong, SAN SANG Share." `
+        -En "PREPARE TG82 — ADB killed; READY to Share."
+    $Script:SessionMode = 'Tg82'
+    Clear-StuckAdbProcesses
+    Stop-AdbServer
+    $null = Show-RedirectStatus
+
+    Write-Host ""
+    Write-Host "  ORDER NOW:  [kill ADB ✓]  ->  TG82 Share  ->  Connect(2)  ->  work" -ForegroundColor Yellow
+    Write-Bi -Level Warn `
+        -Vi "Bay gio: TG82 Auto -> Share/Attach DUNG 1 may. CHUA chay adb/VoLTE." `
+        -En "Now: TG82 Auto -> Share/Attach ONE phone. Do NOT start adb/VoLTE yet."
+    Write-Host @"
+  Checklist Share:
+  [x] ADB da kill (buoc nay vua xong)
+  [ ] Khong con may local nao dang cam ADB
+  [ ] TG82 Auto: Share DUNG 1 device
+  [ ] Doi 3-5 giay cho device on dinh
+  [ ] Menu 2 Connect (start ADB + chot serial) — CHI SAU Share
+"@
+    Write-Bi -Level Ok `
+        -Vi "ADB TAT. Hay Share tren TG82, doi on dinh, roi bam Connect (2)." `
+        -En "ADB OFF. Share in TG82, wait until stable, then press Connect (2)."
 }
 
 function Action-Connect {
     Write-Bi -Level Title `
-        -Vi "Ket noi an toan (1 thiet bi)." `
-        -En "Safe connect (single device)."
+        -Vi "Ket noi ADB an toan (1 thiet bi) — sau khi USB/TG82 da Attach." `
+        -En "Safe ADB connect (one device) — after USB/TG82 Attach is ready."
+
+    if ($Script:SessionMode -eq 'Tg82') {
+        Write-Bi -Level Info `
+            -Vi "Che do TG82: dam bao Share xong truoc khi start-server." `
+            -En "TG82 mode: confirm Share finished before start-server."
+        $null = Show-RedirectStatus
+    }
+
+    # If adb somehow still running from a previous crash path, clear first.
+    Clear-StuckAdbProcesses
     Stop-AdbServer
     Start-Sleep -Milliseconds 500
     Start-AdbServer
-    Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 2
 
     Write-Bi -Level Info `
-        -Vi "Cam may bay gio neu chua cam. Cho 3 giay..." `
-        -En "Plug the phone now if not already. Waiting 3s..."
-    Start-Sleep -Seconds 3
+        -Vi "Dang quet thiet bi (chi 1 may 'device')..." `
+        -En "Scanning devices (expect exactly one 'device')..."
+
+    $all = @(Get-AdbDevices)
+    $online = @($all | Where-Object { $_.State -eq 'device' })
+    if ($all.Count -gt 1) {
+        Write-Bi -Level Warn `
+            -Vi "Co $($all.Count) muc trong adb devices — nen Release bot trong TG82 / rut may thua." `
+            -En "$($all.Count) entries in adb devices — release extras in TG82 / unplug extras."
+    }
 
     $serial = Select-OneDevice -Prefer $Script:PreferredSerial
     if (-not $serial) {
         Write-Bi -Level Err `
-            -Vi "Khong thay thiet bi 'device'. Kiem tra cap, USB debugging, Allow RSA." `
-            -En "No authorized 'device' found. Check cable, USB debugging, RSA Allow prompt."
+            -Vi "Khong thay 'device'. Neu TG82: kiem tra Share, USB debugging, Allow RSA." `
+            -En "No authorized 'device'. If TG82: check Share, USB debugging, RSA Allow."
         return
     }
 
     $Script:PreferredSerial = $serial
     $env:ANDROID_SERIAL = $serial
     Write-Bi -Level Ok `
-        -Vi "Da chot 1 may: $serial (ANDROID_SERIAL). Chi thao tac may nay." `
-        -En "Locked to one device: $serial (ANDROID_SERIAL). Work only on this phone."
+        -Vi "Da chot 1 may: $serial (ANDROID_SERIAL)." `
+        -En "Locked to one device: $serial (ANDROID_SERIAL)."
 
     $r = Invoke-Adb -AdbArgs @('-s', $serial, 'get-state')
     Write-Host ("  get-state: " + ($r.Output -join ' '))
-    Write-Bi -Level Info `
-        -Vi "Khi xong viec: chon Disconnect (4), roi rut day." `
-        -En "When finished: choose Disconnect (4), then unplug."
+
+    if ($Script:SessionMode -eq 'Tg82') {
+        Write-Bi -Level Info `
+            -Vi "Khi xong: menu 9 kill ADB, ROI Unshare tren TG82." `
+            -En "When done: menu 9 kill ADB, THEN Unshare in TG82."
+    }
+    else {
+        Write-Bi -Level Info `
+            -Vi "Khi xong: Disconnect (4), roi rut day." `
+            -En "When finished: Disconnect (4), then unplug."
+    }
 }
 
 function Action-Status {
@@ -370,8 +564,11 @@ function Action-Status {
     }
     else {
         Write-Bi -Level Err -Vi "Khong tim thay adb." -En "adb not found."
-        return
     }
+    if ($Script:SessionMode) {
+        Write-Host ("  Session mode: {0}" -f $Script:SessionMode) -ForegroundColor Cyan
+    }
+    $null = Show-RedirectStatus
     $devices = Get-AdbDevices
     if (-not $devices -or $devices.Count -eq 0) {
         Write-Bi -Level Warn -Vi "Khong co thiet bi nao." -En "No devices listed."
@@ -391,11 +588,12 @@ function Action-Status {
 
 function Action-Disconnect {
     Write-Bi -Level Title `
-        -Vi "Ngat ket noi sach." `
-        -En "Clean disconnect."
+        -Vi "Ngat ket noi sach (LOCAL USB)." `
+        -En "Clean disconnect (LOCAL USB)."
     $serial = $Script:PreferredSerial
     if (-not $serial) {
-        $serial = Select-OneDevice
+        $online = @(Get-AdbDevices | Where-Object { $_.State -eq 'device' })
+        if ($online.Count -eq 1) { $serial = $online[0].Serial }
     }
     if ($serial) {
         Write-Bi -Level Info `
@@ -407,26 +605,78 @@ function Action-Disconnect {
     Clear-StuckAdbProcesses
     Remove-Item Env:ANDROID_SERIAL -ErrorAction SilentlyContinue
     $Script:PreferredSerial = $null
+    $Script:SessionMode = $null
     Write-Bi -Level Ok `
-        -Vi "Da ngat. Ban co the RUT day USB an toan." `
-        -En "Done. You may safely UNPLUG the USB cable."
+        -Vi "Da ngat ADB. Ban co the RUT day USB local." `
+        -En "ADB stopped. You may safely UNPLUG the local USB cable."
+}
+
+function Action-DisconnectTg82 {
+    Write-Bi -Level Title `
+        -Vi "Ngat TG82: kill ADB xong — TIEP theo Unshare tren TG82." `
+        -En "TG82 teardown: ADB killed — NEXT Unshare in TG82."
+
+    $serial = $Script:PreferredSerial
+    if ($serial) {
+        $null = Invoke-Adb -AdbArgs @('-s', $serial, 'disconnect') -TimeoutSec 10
+    }
+    Stop-AdbServer
+    Clear-StuckAdbProcesses
+    Remove-Item Env:ANDROID_SERIAL -ErrorAction SilentlyContinue
+    $Script:PreferredSerial = $null
+
+    Write-Host ""
+    Write-Host "  ORDER NOW:  work done  ->  [kill ADB ✓]  ->  TG82 Unshare" -ForegroundColor Yellow
+    Write-Bi -Level Warn `
+        -Vi "BUOC TIEP THEO (bat buoc trong TG82 Auto):" `
+        -En "NEXT STEP (required in TG82 Auto):"
+    Write-Host @"
+  1) TG82 Auto: Unshare / Release / Stop session (thiet bi vua dung).
+  2) Doi 2-3 giay — KHONG Share may khac ngay.
+  3) Rut day o may khach CHI SAU Unshare thanh cong.
+  4) Neu TG82 treo: Exit app, Recover (5), mo lai.
+"@
+    $null = Show-RedirectStatus
+    $Script:SessionMode = $null
+    Write-Bi -Level Ok `
+        -Vi "ADB da tat. Hay Unshare tren TG82 Auto BAY GIO." `
+        -En "ADB is stopped. Unshare in TG82 Auto NOW."
 }
 
 function Action-Recover {
     Write-Bi -Level Title `
-        -Vi "Khoi phuc sau ket noi loi / BSOD." `
-        -En "Recovery after bad connect / BSOD."
+        -Vi "Khoi phuc sau ket noi loi / BSOD (dac biet sau TG82 Auto + ADB)." `
+        -En "Recovery after bad connect / BSOD (esp. after TG82 Auto + ADB)."
     Write-Bi -Level Warn `
-        -Vi "Doi Windows on dinh xong. Rut may khach neu van dang cam." `
-        -En "Wait until Windows is stable. Unplug the customer phone if still connected."
+        -Vi "Doi Windows on dinh. CHUA Share lai tren TG82. CHUA cam may local." `
+        -En "Wait until Windows is stable. Do NOT Share in TG82 yet. Do NOT plug local."
+
     Clear-StuckAdbProcesses
     Stop-AdbServer
     Start-Sleep -Seconds 1
     Start-AdbServer
+
+    Write-Bi -Level Info `
+        -Vi "Kiem tra TG82 / redirect con treo khong:" `
+        -En "Checking whether TG82 / redirect still looks active:"
+    $null = Show-RedirectStatus
+
+    Write-Host @"
+
+  Recover checklist:
+  [ ] TG82 Auto — Unshare moi session treo; neu treo thi Exit app.
+  [ ] Khong Share lai cho den khi menu 8 (kill ADB) xong.
+  [ ] Neu BSOD lap: ghi STOP code + ten driver tu minidump.
+  [ ] Thu Share 1 may/cong khac o may khach de tach HW vs redirect.
+"@
+
     Invoke-UsbPnPRefresh
+    Show-PublicNotes
+
     Write-Bi -Level Ok `
-        -Vi "Khoi phuc co ban xong. Cam lai chi khi can, dung Prepare -> Connect." `
-        -En "Basic recovery done. Reconnect only when needed via Prepare -> Connect."
+        -Vi "Recover xong. Lan sau: 8 kill ADB -> Share -> 2 Connect -> work -> 9 kill ADB -> Unshare." `
+        -En "Recover done. Next: 8 kill ADB -> Share -> 2 Connect -> work -> 9 kill ADB -> Unshare."
+    $Script:SessionMode = $null
 }
 
 function Action-Kill {
@@ -445,16 +695,26 @@ function Show-Menu {
     else {
         Write-Host "  WARNING: adb.exe not found in PATH" -ForegroundColor Red
     }
+    if ($Script:SessionMode) {
+        Write-Host ("  mode: {0}" -f $Script:SessionMode) -ForegroundColor DarkCyan
+    }
     Write-Host ""
-    Write-Host "  1) Prepare   — dung ADB, tips; CHUA cam may"
-    Write-Host "               stop ADB + tips; do NOT plug yet"
-    Write-Host "  2) Connect   — start ADB, chot 1 thiet bi"
-    Write-Host "               start ADB, lock one device"
-    Write-Host "  3) Status    — liet ke thiet bi / list devices"
-    Write-Host "  4) Disconnect— ngat sach + kill ADB / clean unplug"
-    Write-Host "  5) Recover   — sau BSOD / USB ket / after crash"
-    Write-Host "  6) Tips      — hardening / meo an toan"
-    Write-Host "  7) Kill ADB  — chi kill process + kill-server"
+    Write-Host "  SAFE ORDER (TG82): kill ADB -> Share -> Connect -> work -> kill ADB -> Unshare" -ForegroundColor Yellow
+    Write-Host "  Thu tu:           kill ADB -> Share -> Connect -> lam viec -> kill ADB -> Unshare" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  --- TG82 Auto NOW (remote customer) ---" -ForegroundColor Yellow
+    Write-Host "  8) Prepare TG82     = kill ADB  (roi Share tren TG82)" -ForegroundColor Yellow
+    Write-Host "  2) Connect          = start ADB sau khi Share xong, chot 1 may" -ForegroundColor Yellow
+    Write-Host "  9) Disconnect TG82  = kill ADB  (roi Unshare tren TG82)" -ForegroundColor Yellow
+    Write-Host "  C) Checklist        = in lai thu tu + ghi chu"
+    Write-Host ""
+    Write-Host "  --- Local USB / other ---"
+    Write-Host "  1) Prepare        local: stop ADB; CHUA cam may"
+    Write-Host "  3) Status         adb devices + TG82 hints"
+    Write-Host "  4) Disconnect     local: kill ADB, then unplug"
+    Write-Host "  5) Recover        sau BSOD (TG82 hoac local)"
+    Write-Host "  6) Tips           hardening"
+    Write-Host "  7) Kill ADB       chi kill process + kill-server"
     Write-Host "  0) Exit"
     Write-Host ""
 }
@@ -471,6 +731,10 @@ function Invoke-MenuLoop {
             '5' { Action-Recover }
             '6' { Show-HardeningTips }
             '7' { Action-Kill }
+            '8' { Action-PrepareTg82 }
+            '9' { Action-DisconnectTg82 }
+            'C' { Action-Checklist }
+            'c' { Action-Checklist }
             '0' { break }
             'q' { break }
             'Q' { break }
@@ -488,6 +752,11 @@ function Invoke-MenuLoop {
 # --- Entry -------------------------------------------------------------------
 
 Write-Banner
+Write-Bi -Level Warn `
+    -Vi "Bang chung: BSOD ngay khi connect ADB qua USB Redirector TG82 Auto." `
+    -En "Evidence: BSOD immediately on ADB connect via USB Redirector TG82 Auto."
+Write-Host "  NOW:  8 Prepare TG82  ->  Share  ->  2 Connect  ->  work  ->  9 kill ADB  ->  Unshare" -ForegroundColor Yellow
+
 if (-not (Find-Adb)) {
     Write-Bi -Level Warn `
         -Vi "Chua thay adb.exe — mot so chuc nang se that bai cho den khi cai platform-tools." `
@@ -495,14 +764,17 @@ if (-not (Find-Adb)) {
 }
 
 switch ($Action) {
-    'Prepare'    { Action-Prepare }
-    'Connect'    { Action-Connect }
-    'Status'     { Action-Status }
-    'Disconnect' { Action-Disconnect }
-    'Recover'    { Action-Recover }
-    'Tips'       { Show-HardeningTips }
-    'Kill'       { Action-Kill }
-    default      { Invoke-MenuLoop }
+    'Prepare'         { Action-Prepare }
+    'PrepareTg82'     { Action-PrepareTg82 }
+    'Connect'         { Action-Connect }
+    'Status'          { Action-Status }
+    'Disconnect'      { Action-Disconnect }
+    'DisconnectTg82'  { Action-DisconnectTg82 }
+    'Recover'         { Action-Recover }
+    'Tips'            { Show-HardeningTips }
+    'Kill'            { Action-Kill }
+    'Checklist'       { Action-Checklist }
+    default           { Invoke-MenuLoop }
 }
 
 if ($Action -ne 'Menu' -and -not $NoPause) {
