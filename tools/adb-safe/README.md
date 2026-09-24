@@ -1,5 +1,13 @@
 # ADB Safe Session / Phiên ADB An Toàn
 
+> **Gói đầy đủ (khuyến nghị):** thư mục repo [`Fix-Xanh-Man/`](../../Fix-Xanh-Man/)  
+> **Cài trên Windows tới:** `D:\TOOL\Fix Xanh Màn Khởi Động lại`  
+> Script: [`Fix-Xanh-Man/CaiDat-Ve-O-D.ps1`](../../Fix-Xanh-Man/CaiDat-Ve-O-D.ps1)
+
+Thư mục `tools/adb-safe/` giữ bản tool gốc (tương thích). Dùng hàng ngày hãy cài gói `Fix-Xanh-Man`.
+
+---
+
 Small **Windows** helper for phone-repair / VoLTE desks. Covers **local USB** and the high-risk path **USB Redirector TG82 Auto + ADB**.
 
 **Operator evidence:** BSOD + reboot happened **immediately** when connecting ADB through **USB Redirector TG82 Auto**. This tool keeps TG82 in the workflow — it does **not** tell you to abandon remote USB.
@@ -30,6 +38,23 @@ After BSOD: **5 Recover** → Unshare any stuck session → only Share again aft
 ---
 
 ## How to run (NOW)
+
+### Cài gói đầy đủ lên ổ D: (khuyến nghị)
+
+```powershell
+# Tu thu muc Fix-Xanh-Man da clone:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\CaiDat-Ve-O-D.ps1
+```
+
+One-liner (PC Windows có mạng):
+
+```powershell
+$u='https://raw.githubusercontent.com/mobjle2/TG82-VoLTE-Release/cursor/adb-safe-bsod-tool-e134/Fix-Xanh-Man/CaiDat-Ve-O-D.ps1'; $f="$env:TEMP\CaiDat-Ve-O-D.ps1"; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; curl.exe -fsSL $u -o $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f
+```
+
+Sau đó: `D:\TOOL\Fix Xanh Màn Khởi Động lại\Chay-AdbSafe.bat`
+
+### Chỉ dùng thư mục này
 
 1. Copy `tools/adb-safe/` to the Windows PC (or pull this PR branch).
 2. Need `adb.exe` on PATH (or next to the scripts).
@@ -84,7 +109,16 @@ One-shot for reconnect:
 ## Layout
 
 ```
-tools/adb-safe/
+Fix-Xanh-Man/                 ← gói standalone (home Windows)
+  CaiDat-Ve-O-D.ps1
+  Chay-AdbSafe.bat
+  README.md
+  adb-safe\
+    AdbSafe.ps1
+    AdbSafe.bat
+    README.md
+
+tools/adb-safe/               ← bản giữ tương thích
   AdbSafe.ps1
   AdbSafe.bat
   README.md
