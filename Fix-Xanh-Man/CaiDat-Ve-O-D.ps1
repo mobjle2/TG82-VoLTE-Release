@@ -27,10 +27,9 @@ try {
 }
 
 function Write-Step {
-    param([string]$Vi, [string]$En)
+    param([string]$Msg)
     Write-Host ""
-    Write-Host ("[VI] " + $Vi) -ForegroundColor Cyan
-    Write-Host ("[EN] " + $En) -ForegroundColor DarkGray
+    Write-Host $Msg -ForegroundColor Cyan
 }
 
 function Ensure-ParentDir {
@@ -63,18 +62,14 @@ function Download-File {
         }
         return
     }
-    # Fallback: Invoke-WebRequest (older Windows without curl)
     Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
 }
 
-# Relative paths that make up the standalone project (root of TargetRoot).
 $ProjectFiles = @(
     'README.md',
     'CaiDat-Ve-O-D.ps1',
-    'Chay-AdbSafe.bat',
-    'adb-safe\AdbSafe.ps1',
-    'adb-safe\AdbSafe.bat',
-    'adb-safe\README.md'
+    'Fix.bat',
+    'Fix.ps1'
 )
 
 Write-Host ""
@@ -83,21 +78,19 @@ Write-Host "  Cai dat Fix Xanh Man Khoi Dong lai" -ForegroundColor Green
 Write-Host "  -> $TargetRoot" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 
-Write-Step -Vi "Tao thu muc dich (va parent D:\TOOL neu can)..." `
-           -En "Creating target folder (and D:\TOOL if needed)..."
+Write-Step "Tao thu muc dich..."
 
 Ensure-ParentDir -Path (Join-Path $TargetRoot '_placeholder')
 if (-not (Test-Path -LiteralPath $TargetRoot)) {
     New-Item -ItemType Directory -Path $TargetRoot -Force | Out-Null
 }
-New-Item -ItemType Directory -Path (Join-Path $TargetRoot 'adb-safe') -Force | Out-Null
 
 $scriptDir = $PSScriptRoot
 if (-not $scriptDir) {
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
 
-$localManifest = Join-Path $scriptDir 'Chay-AdbSafe.bat'
+$localManifest = Join-Path $scriptDir 'Fix.bat'
 $useLocalCopy = $false
 if ($scriptDir -and (Test-Path -LiteralPath $localManifest)) {
     $missing = @()
@@ -112,8 +105,7 @@ if ($scriptDir -and (Test-Path -LiteralPath $localManifest)) {
 }
 
 if ($useLocalCopy) {
-    Write-Step -Vi "Copy toan bo file tu thu muc script hien tai..." `
-               -En "Copying all files from current script folder..."
+    Write-Step "Copy file tu thu muc script..."
     foreach ($rel in $ProjectFiles) {
         $src = Join-Path $scriptDir $rel
         $dst = Join-Path $TargetRoot $rel
@@ -122,8 +114,7 @@ if ($useLocalCopy) {
         Write-Host ("  OK  " + $rel) -ForegroundColor DarkGreen
     }
 } else {
-    Write-Step -Vi "Tai file tu GitHub (raw)..." `
-               -En "Downloading files from GitHub raw..."
+    Write-Step "Tai file tu GitHub..."
     $base = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/$RepoSubdir"
     foreach ($rel in $ProjectFiles) {
         $urlRel = ($rel -replace '\\', '/')
@@ -135,11 +126,21 @@ if ($useLocalCopy) {
     }
 }
 
-# Sanity check
-$required = @(
+# Xoa ban cu (menu AdbSafe) neu con trong thu muc dich
+$legacy = @(
     (Join-Path $TargetRoot 'Chay-AdbSafe.bat'),
-    (Join-Path $TargetRoot 'adb-safe\AdbSafe.ps1'),
-    (Join-Path $TargetRoot 'adb-safe\AdbSafe.bat'),
+    (Join-Path $TargetRoot 'adb-safe')
+)
+foreach ($old in $legacy) {
+    if (Test-Path -LiteralPath $old) {
+        Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host ("  Da xoa ban cu: " + $old) -ForegroundColor DarkGray
+    }
+}
+
+$required = @(
+    (Join-Path $TargetRoot 'Fix.bat'),
+    (Join-Path $TargetRoot 'Fix.ps1'),
     (Join-Path $TargetRoot 'README.md')
 )
 foreach ($p in $required) {
@@ -149,14 +150,11 @@ foreach ($p in $required) {
 }
 
 Write-Host ""
-Write-Host "[VI] THANH CONG — da cai vao:" -ForegroundColor Green
-Write-Host "[EN] SUCCESS — installed to:" -ForegroundColor Green
-Write-Host "     $TargetRoot" -ForegroundColor White
+Write-Host "THANH CONG — da cai vao:" -ForegroundColor Green
+Write-Host "  $TargetRoot" -ForegroundColor White
 Write-Host ""
-Write-Host "[VI] Chay tool: double-click Chay-AdbSafe.bat" -ForegroundColor Cyan
-Write-Host "[EN] Run tool: double-click Chay-AdbSafe.bat" -ForegroundColor Cyan
-Write-Host "[VI] Luu y: giam rui ro BSOD — KHONG chua 100%." -ForegroundColor DarkYellow
-Write-Host "[EN] Note: risk reducer — NOT a full BSOD cure." -ForegroundColor DarkYellow
+Write-Host "Chay: double-click Fix.bat" -ForegroundColor Cyan
+Write-Host "Giam rui ro BSOD — KHONG chua 100%." -ForegroundColor DarkYellow
 
 try {
     Start-Process explorer.exe -ArgumentList $TargetRoot
